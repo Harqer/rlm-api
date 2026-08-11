@@ -38,6 +38,16 @@ class CompletionRequest(BaseModel):
 
     backend: Backend = Field(default="anthropic")
     model: str = Field(default="claude-sonnet-4-5")
+    environment: Literal["local", "e2b"] = Field(
+        default="local",
+        description=(
+            "Where the model-written code actually executes. 'local' runs in-process "
+            "(fast, zero isolation — fine for your own trusted calls). 'e2b' runs in a "
+            "Firecracker microVM sandbox (real kernel boundary — use for untrusted/"
+            "third-party callers). This is independent of `backend`: any LLM can run "
+            "in either environment."
+        ),
+    )
     max_iterations: int = Field(default=12, ge=1, le=30)
     max_depth: int = Field(default=1, ge=0, le=1, description="1 = allow recursive sub-calls; 0 = REPL-only, no sub-LLM spawning")
     max_budget_usd: float | None = Field(default=None, description="Hard cost ceiling for this single call")

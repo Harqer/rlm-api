@@ -73,12 +73,46 @@ cheap sub-LLM call, rather than everything being crammed into the attention
 window up front. That's the literal mechanism, not a metaphor — verified
 against `rlm.core.types.QueryMetadata` directly (see `tests/`).
 
-## Integrating with "whatever other LLM"
+## Integrating with "whatever other LLM" (fully agnostic)
 
 `backend` accepts: `openai`, `anthropic`, `gemini`, `openrouter`, `portkey`,
 `vllm`, `azure_openai`, `vercel`. Set `model` to that backend's model name
 and pass the matching key via `X-Backend-Api-Key`. No code changes needed
 per backend — it's a request parameter, same as RLM's own `RLM(backend=...)`.
+
+## Sandbox choice is a *separate* dial from LLM choice
+
+`environment` picks where the model-written code actually runs — independent
+of which LLM answered. Any backend can run in either environment:
+
+- `"local"` (default) — runs in-process. Zero isolation, fastest, fine for
+  your own trusted server-to-server calls.
+- `"e2b"` — runs in a Firecracker microVM via E2B. Real kernel boundary; use
+  this once you're accepting calls from third parties or untrusted context.
+  Requires `E2B_API_KEY` set on the deployment (operator infra cost — the
+  caller's BYOK key only covers the LLM, not the sandbox).
+
+```json
+{
+  "prompt": "...",
+  "context": [...],
+  "backend": "openai",
+  "model": "gpt-5-mini",
+  "environment": "e2b"
+}
+```
+
+If `environment="e2b"` is requested but `E2B_API_KEY` isn't configured, the
+API returns a clean `400` explaining exactly that — it won't silently fall
+back to unsandboxed execution.
+
+Other `rlms`-native environments (`docker`, `modal`, `daytona`, `prime`) can
+be added the same way: extend `ALLOWED_ENVIRONMENT_KINDS` in `app/config.py`
+and add a branch in `_resolve_environment()` in `app/rlm_service.py`. A GCP
+Cloud Run sandboxes adapter (gVisor, runs inside this same Cloud Run service
+— no second thing to deploy) is a good next one to write; it isn't one of
+`rlms`' built-in environment types, so it needs a small custom `IsolatedEnv`
+subclass rather than a one-line config change.
 
 ## Deploying
 

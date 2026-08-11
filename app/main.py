@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import optional_backend_key, require_api_key
 from app.db import record_usage
-from app.rlm_service import BackendCredentialError, run_completion
+from app.rlm_service import BackendCredentialError, EnvironmentNotAllowedError, run_completion
 from app.schemas import CompletionRequest, CompletionResponse
 
 logging.basicConfig(level=logging.INFO)
@@ -45,6 +45,8 @@ async def completions(
     try:
         result = await run_completion(req, byok_backend_key=backend_key)
     except BackendCredentialError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except EnvironmentNotAllowedError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # noqa: BLE001 — surface real errors to the caller, don't swallow
         logger.exception("RLM completion failed")

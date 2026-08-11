@@ -46,7 +46,16 @@ class Settings:
 
     # REPL environment — 'local' for dev, use 'docker'/'modal'/'e2b' in prod
     # once this handles untrusted multi-tenant context. See README security note.
+    # This is operator infra (borne by you), separate from the caller's BYOK
+    # LLM key — a caller picks any LLM, but everyone shares your sandbox fleet.
     ENVIRONMENT_KIND: str = os.environ.get("RLM_ENVIRONMENT_KIND", "local")
+    ALLOWED_ENVIRONMENT_KINDS: set[str] = {"local", "e2b"}  # extend as you wire in more adapters
+
+    # E2B reads this from the process env itself (Sandbox.create() has no
+    # api_key kwarg in rlms' E2BREPL) — so we set os.environ["E2B_API_KEY"]
+    # at startup if configured, rather than passing it per-call.
+    E2B_API_KEY: str | None = os.environ.get("E2B_API_KEY")
+    E2B_SANDBOX_TIMEOUT_S: int = int(os.environ.get("E2B_SANDBOX_TIMEOUT_S", "300"))
 
     PORT: int = int(os.environ.get("PORT", "8080"))
 

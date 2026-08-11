@@ -12,6 +12,7 @@ REPL/recursion logic; we import and drive `rlm.RLM` directly and add:
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any
 
@@ -20,8 +21,20 @@ from rlm import RLM
 from app.config import settings
 from app.schemas import CompletionRequest
 
+# E2B's Sandbox.create() (called inside rlm's E2BREPL) reads E2B_API_KEY
+# straight from the process environment — there's no api_key kwarg to pass
+# per-call. So we set it once, at import time, from our own config layer
+# (which itself came from GCP Secret Manager in prod). This is operator
+# infra, not a per-caller BYOK credential.
+if settings.E2B_API_KEY:
+    os.environ.setdefault("E2B_API_KEY", settings.E2B_API_KEY)
+
 
 class BackendCredentialError(Exception):
+    pass
+
+
+class EnvironmentNotAllowedError(Exception):
     pass
 
 
@@ -75,8 +88,29 @@ def _backend_kwargs(req: CompletionRequest, api_key: str) -> dict[str, Any]:
     return kwargs
 
 
+def _resolve_environment(req: CompletionRequest) -> tuple[str, dict[str, Any]]:
+    """Sandbox choice is independent of LLM choice — any backend can run in
+    any environment. Operator controls which environments are enabled at all
+    (ALLOWED_ENVIRONMENT_KINDS) since e2b carries real infra cost per call."""
+    kind = req.environment
+    if kind not in settings.ALLOWED_ENVIRONMENT_KINDS:
+        raise EnvironmentNotAllowedError(
+            f"Environment '{kind}' is not enabled on this deployment. "
+            f"Allowed: {sorted(settings.ALLOWED_ENVIRONMENT_KINDS)}."
+        )
+    if kind == "e2b":
+        if not settings.E2B_API_KEY:
+            raise EnvironmentNotAllowedError(
+                "environment='e2b' was requested but this deployment has no E2B_API_KEY configured. "
+                "Set E2B_API_KEY (operator infra, not BYOK) or use environment='local'."
+            )
+        return "e2b", {"timeout": settings.E2B_SANDBOX_TIMEOUT_S}
+    return "local", {}
+
+
 async def run_completion(req: CompletionRequest, byok_backend_key: str | None) -> dict[str, Any]:
     api_key = _resolve_backend_api_key(req.backend, byok_backend_key)
+    environment, environment_kwargs = _resolve_environment(req)
 
     max_iterations = min(req.max_iterations, settings.MAX_ITERATIONS_CAP)
     max_depth = min(req.max_depth, settings.MAX_DEPTH_CAP)
@@ -84,7 +118,8 @@ async def run_completion(req: CompletionRequest, byok_backend_key: str | None) -
     rlm = RLM(
         backend=req.backend,
         backend_kwargs=_backend_kwargs(req, api_key),
-        environment=settings.ENVIRONMENT_KIND,
+        environment=environment,
+        environment_kwargs=environment_kwargs,
         max_iterations=max_iterations,
         max_depth=max_depth,
         max_budget=req.max_budget_usd,
