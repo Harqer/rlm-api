@@ -36,6 +36,20 @@ class CompletionRequest(BaseModel):
         description="Large content (skills, docs, code, transcripts) turned into REPL variables.",
     )
 
+    mode: Literal["auto", "rlm", "direct"] = Field(
+        default="auto",
+        description=(
+            "'direct' = single passthrough call to the LLM, all context concatenated into "
+            "the prompt (cheapest per-call for small context, no token savings). "
+            "'rlm' = always offload context into REPL variables (best savings on large "
+            "context, small fixed overhead on tiny context). "
+            "'auto' (default, recommended) = picks 'direct' below "
+            "AUTO_MODE_CONTEXT_CHAR_THRESHOLD total context size, 'rlm' above it — this is "
+            "the harness behavior: same call shape regardless of model, cost minimized "
+            "automatically per request."
+        ),
+    )
+
     backend: Backend = Field(default="anthropic")
     model: str = Field(default="claude-sonnet-4-5")
     environment: Literal["local", "e2b"] = Field(
@@ -64,9 +78,20 @@ class UsageSummaryOut(BaseModel):
     cost_usd: float
 
 
+class SavingsOut(BaseModel):
+    mode_used: Literal["direct", "rlm"]
+    estimated_naive_tokens: int = Field(
+        description="Approx. tokens if all context had been concatenated into one prompt (chars/4 heuristic)."
+    )
+    actual_total_tokens: int = Field(description="Real tokens billed by the provider, from their own usage response.")
+    tokens_saved: int
+    pct_saved: float
+
+
 class CompletionResponse(BaseModel):
     response: str
     root_model: str
     execution_time_s: float
     usage: UsageSummaryOut
+    savings: SavingsOut
     trajectory: dict[str, Any] | None = None

@@ -7,6 +7,10 @@ REPL/recursion logic; we import and drive `rlm.RLM` directly and add:
   2. Multiple named context blocks -> REPL variables (dict prompt form)
   3. Per-tenant safety caps (iterations, depth, budget, timeout)
   4. Usage/cost extraction into a JSON-friendly shape for the API response
+  5. A harness layer (this file's `run_completion`) that auto-picks between
+     a plain passthrough call and full RLM offload per request, so the same
+     call shape works whether context is 200 chars or 200,000 — and reports
+     the actual token savings, not just claims them.
 """
 
 from __future__ import annotations
@@ -17,9 +21,11 @@ import time
 from typing import Any
 
 from rlm import RLM
+from rlm.clients import get_client as get_direct_client
 
 from app.config import settings
 from app.schemas import CompletionRequest
+from app.token_estimate import estimate_tokens
 
 # E2B's Sandbox.create() (called inside rlm's E2BREPL) reads E2B_API_KEY
 # straight from the process environment — there's no api_key kwarg to pass
@@ -82,6 +88,17 @@ def _build_repl_prompt(req: CompletionRequest) -> str | dict[str, Any]:
     return variables
 
 
+def _flatten_context_for_direct_call(req: CompletionRequest) -> str:
+    """The naive baseline every prompt-stuffing integration does today:
+    concatenate everything and hope the model reads what matters. This is
+    what 'direct' mode sends, and what 'auto' mode falls back to when
+    context is small enough that RLM's REPL overhead isn't worth paying."""
+    if not req.context:
+        return req.prompt
+    sections = [f"### {block.name}\n{block.content}" for block in req.context]
+    return "\n\n".join(sections) + f"\n\n### instruction\n{req.prompt}"
+
+
 def _backend_kwargs(req: CompletionRequest, api_key: str) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"model_name": req.model, "api_key": api_key}
     kwargs.update(req.backend_kwargs)
@@ -108,8 +125,43 @@ def _resolve_environment(req: CompletionRequest) -> tuple[str, dict[str, Any]]:
     return "local", {}
 
 
-async def run_completion(req: CompletionRequest, byok_backend_key: str | None) -> dict[str, Any]:
-    api_key = _resolve_backend_api_key(req.backend, byok_backend_key)
+def _decide_mode(req: CompletionRequest) -> str:
+    if req.mode != "auto":
+        return req.mode
+    total_chars = sum(len(b.content) for b in req.context)
+    return "direct" if total_chars <= settings.AUTO_MODE_CONTEXT_CHAR_THRESHOLD else "rlm"
+
+
+async def _run_direct(req: CompletionRequest, api_key: str) -> dict[str, Any]:
+    """Plain single-shot call via rlm's own client factory — model-agnostic
+    (same BaseLM.completion()/.get_last_usage() interface across all 8
+    backends) with zero REPL overhead. Cheapest path for small context."""
+    client = get_direct_client(req.backend, _backend_kwargs(req, api_key))
+    prompt = _flatten_context_for_direct_call(req)
+
+    start = time.perf_counter()
+    response = await asyncio.to_thread(client.completion, prompt)
+    elapsed = time.perf_counter() - start
+
+    usage = client.get_last_usage()
+    input_tokens = usage.total_input_tokens
+    output_tokens = usage.total_output_tokens
+    cost = usage.total_cost or 0.0
+
+    return {
+        "response": response,
+        "root_model": req.model,
+        "execution_time_s": elapsed,
+        "usage": {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "cost_usd": round(cost, 6),
+        },
+    }
+
+
+async def _run_rlm(req: CompletionRequest, api_key: str) -> dict[str, Any]:
     environment, environment_kwargs = _resolve_environment(req)
 
     max_iterations = min(req.max_iterations, settings.MAX_ITERATIONS_CAP)
@@ -152,3 +204,35 @@ async def run_completion(req: CompletionRequest, byok_backend_key: str | None) -
         },
         "raw_usage_summary": usage.to_dict(),
     }
+
+
+async def run_completion(req: CompletionRequest, byok_backend_key: str | None) -> dict[str, Any]:
+    """The harness entry point. One call shape, any model (backend/model are
+    just parameters), auto-routed to whichever path actually costs fewer
+    tokens for this request's context size — and the response tells you
+    exactly how many tokens that routing decision saved, computed against
+    the real provider usage response, not an estimate on both sides."""
+    api_key = _resolve_backend_api_key(req.backend, byok_backend_key)
+    mode = _decide_mode(req)
+
+    naive_baseline = _flatten_context_for_direct_call(req)
+    estimated_naive_tokens = estimate_tokens(naive_baseline)
+
+    if mode == "direct":
+        result = await _run_direct(req, api_key)
+    else:
+        result = await _run_rlm(req, api_key)
+
+    actual_total = result["usage"]["total_tokens"]
+    tokens_saved = estimated_naive_tokens - actual_total
+    pct_saved = (tokens_saved / estimated_naive_tokens * 100.0) if estimated_naive_tokens else 0.0
+
+    result["savings"] = {
+        "mode_used": mode,
+        "estimated_naive_tokens": estimated_naive_tokens,
+        "actual_total_tokens": actual_total,
+        "tokens_saved": tokens_saved,
+        "pct_saved": round(pct_saved, 2),
+    }
+    return result
+

@@ -79,4 +79,5 @@ async def completions(
         root_model=result["root_model"],
         execution_time_s=result["execution_time_s"],
         usage=usage,
+        savings=result["savings"],
     )

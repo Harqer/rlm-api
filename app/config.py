@@ -44,6 +44,13 @@ class Settings:
     MAX_DEPTH_CAP: int = int(os.environ.get("RLM_MAX_DEPTH_CAP", "1"))
     REQUEST_TIMEOUT_S: float = float(os.environ.get("RLM_REQUEST_TIMEOUT_S", "180"))
 
+    # Harness auto-routing: below this many total context chars, a plain
+    # 'direct' passthrough call is cheaper than RLM's REPL overhead. Above
+    # it, RLM offload wins because the model stops re-paying for the full
+    # context on every internal step. ~24000 chars ≈ 6k tokens is a
+    # reasonable default crossover point; tune per your actual traffic.
+    AUTO_MODE_CONTEXT_CHAR_THRESHOLD: int = int(os.environ.get("AUTO_MODE_CONTEXT_CHAR_THRESHOLD", "24000"))
+
     # REPL environment — 'local' for dev, use 'docker'/'modal'/'e2b' in prod
     # once this handles untrusted multi-tenant context. See README security note.
     # This is operator infra (borne by you), separate from the caller's BYOK

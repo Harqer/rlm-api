@@ -52,6 +52,7 @@ def main() -> None:
                 ),
             }
         ],
+        "mode": "auto",
         "backend": "anthropic",
         "model": "claude-sonnet-4-5",
         "max_iterations": 8,
@@ -74,6 +75,8 @@ def main() -> None:
     print(data["response"])
     print("=== USAGE ===")
     print(data["usage"])
+    print("=== SAVINGS (harness routing decision) ===")
+    print(data["savings"])
 
     assert "3" in data["response"] or "three" in data["response"].lower(), (
         "Expected the model to find 3 ERROR lines — check response above."
